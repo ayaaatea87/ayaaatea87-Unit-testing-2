@@ -5,6 +5,7 @@ using Simulation.Checkout.Application;
 using Simulation.Checkout.Application.Abstractions;
 using Simulation.Checkout.Domain;
 using Simulation.Checkout.Domain.Exceptions;
+using Simulation.Checkout.Tests.TestData;
 
 namespace Simulation.Checkout.Tests;
 
@@ -454,4 +455,78 @@ public class CheckoutServiceTests
                 It.IsAny<CancellationToken>()),
             Times.Never);
     }
+    // Task-3 :
+
+    [Fact]
+    public async Task CheckoutAsync_WhenUsingAutoFixtureOrder_ShouldSucceed()
+    {
+        // Arrange
+        var orderRepositoryMock = new Mock<IOrderRepository>();
+        var inventoryServiceMock = new Mock<IInventoryService>();
+        var notificationServiceMock = new Mock<INotificationService>();
+
+        inventoryServiceMock
+            // handle mock behavior without throwing exception
+            .Setup(x => x.IsAvailableAsync(
+                It.IsAny<Guid>(),
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+
+        var order = OrderTestData.CreateValidOrder(
+            "Test Customer",
+            "test@example.com");
+
+        var tst = new CheckoutService(
+            orderRepositoryMock.Object,
+            inventoryServiceMock.Object,
+            notificationServiceMock.Object);
+
+        // Act
+        var receipt = await tst.CheckoutAsync(order);
+
+        // Assert
+        receipt.Should().NotBeNull();
+        receipt.Items.Should().NotBeEmpty();
+
+        receipt.Items.Should().OnlyContain(
+            x => x.Quantity > 0 && x.UnitPrice >= 0);
+    }
+    // Bogus
+
+    [Fact]
+    public async Task CheckoutAsync_WhenUsingBogusCustomer_ShouldPreserveCustomerDataInReceipt()
+    {
+        // Arrange
+        var orderRepositoryMock = new Mock<IOrderRepository>();
+        var inventoryServiceMock = new Mock<IInventoryService>();
+        var notificationServiceMock = new Mock<INotificationService>();
+
+        inventoryServiceMock
+            .Setup(x => x.IsAvailableAsync(
+                It.IsAny<Guid>(),
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+
+        var customer = CustomerTestData.Create();
+
+        var order = OrderTestData.CreateValidOrder(
+            customer.Name,
+            customer.Email);
+
+        var tst = new CheckoutService(
+            orderRepositoryMock.Object,
+            inventoryServiceMock.Object,
+            notificationServiceMock.Object);
+
+        // Act
+        var receipt = await tst.CheckoutAsync(order);
+
+        // Assert
+        receipt.CustomerName.Should().Be(customer.Name);
+        receipt.CustomerEmail.Should().Be(customer.Email);
+    }
+
+
 }
