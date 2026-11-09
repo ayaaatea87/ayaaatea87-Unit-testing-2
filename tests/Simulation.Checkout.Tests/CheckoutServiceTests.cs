@@ -277,4 +277,181 @@ public class CheckoutServiceTests
         receipt.Discount.Should().Be(expectedDiscount);
         receipt.Total.Should().Be(expectedTotal);
     }
+// Task_2 : verfiy
+    [Fact]
+    public async Task CheckoutAsync_WhenOrderIsValid_ShouldSaveOrderAndSendConfirmationOnce()
+    {
+        // Create mock dependencies
+        // Arrange
+        var orderRepositoryMock = new Mock<IOrderRepository>();
+        var inventoryServiceMock = new Mock<IInventoryService>();
+        var notificationServiceMock = new Mock<INotificationService>();
+
+        // Handle mock behavior when called IsAvailableAsync return true instead of throw InsufficientInventoryException
+        inventoryServiceMock
+            .Setup(x => x.IsAvailableAsync(
+                It.IsAny<Guid>(),
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+
+        orderRepositoryMock
+            .Setup(x => x.SaveAsync(
+                It.IsAny<Order>(),
+                It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+
+        notificationServiceMock
+            .Setup(x => x.SendOrderConfirmationAsync(
+                It.IsAny<CheckoutReceipt>(),
+                It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+
+        var tst = new CheckoutService(
+            orderRepositoryMock.Object,
+            inventoryServiceMock.Object,
+            notificationServiceMock.Object);
+
+        var order = new Order
+        {
+            CustomerName = "Aya",
+            CustomerEmail = "aya@example.com",
+            Items =
+            [
+                new OrderItem
+            {
+                ProductId = Guid.NewGuid(),
+                ProductName = "Laptop",
+                UnitPrice = 500m,
+                Quantity = 2
+            }
+            ]
+        };
+
+        // Act
+        await tst.CheckoutAsync(order);
+
+        // // Assert - Verify the expected behavior
+        orderRepositoryMock.Verify(
+            x => x.SaveAsync(order, It.IsAny<CancellationToken>()),
+            Times.Once);
+
+        notificationServiceMock.Verify(
+            x => x.SendOrderConfirmationAsync(
+                It.IsAny<CheckoutReceipt>(),
+                It.IsAny<CancellationToken>()),
+            //  ensure that method called one time
+            Times.Once);
+    }
+    [Fact]
+    public async Task CheckoutAsync_WhenItemIsOutOfStock_ShouldThrowExceptionAndSkipSavingAndNotification()
+    {
+        // Arrange
+        var orderRepositoryMock = new Mock<IOrderRepository>();
+        var inventoryServiceMock = new Mock<IInventoryService>();
+        var notificationServiceMock = new Mock<INotificationService>();
+
+        inventoryServiceMock
+            .Setup(x => x.IsAvailableAsync(
+                It.IsAny<Guid>(),
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()))
+            // reurn false => throw InsufficientInventoryException
+            .ReturnsAsync(false);
+
+        var tst = new CheckoutService(
+            orderRepositoryMock.Object,
+            inventoryServiceMock.Object,
+            notificationServiceMock.Object);
+
+        var order = new Order
+        {
+            CustomerName = "Aya",
+            CustomerEmail = "aya@example.com",
+            Items =
+            [
+                new OrderItem
+            {
+                ProductId = Guid.NewGuid(),
+                ProductName = "Laptop",
+                UnitPrice = 500m,
+                Quantity = 2
+            }
+            ]
+        };
+
+        // Act
+        var act = async () => await tst.CheckoutAsync(order);
+
+        // Assert
+        await act.Should().ThrowAsync<InsufficientInventoryException>();
+
+        orderRepositoryMock.Verify(
+            x => x.SaveAsync(
+                It.IsAny<Order>(),
+                It.IsAny<CancellationToken>()),
+            // ensure that save order failure
+            Times.Never);
+
+        notificationServiceMock.Verify(
+            x => x.SendOrderConfirmationAsync(
+                It.IsAny<CheckoutReceipt>(),
+                It.IsAny<CancellationToken>()),
+            // ensure that send confirmation failure
+            Times.Never);
+    }
+    [Fact]
+    public async Task CheckoutAsync_WhenValidationFails_ShouldSkipInventorySavingAndNotification()
+    {
+        // Arrange
+        var orderRepositoryMock = new Mock<IOrderRepository>();
+        var inventoryServiceMock = new Mock<IInventoryService>();
+        var notificationServiceMock = new Mock<INotificationService>();
+
+        var tst = new CheckoutService(
+            orderRepositoryMock.Object,
+            inventoryServiceMock.Object,
+            notificationServiceMock.Object);
+
+        var order = new Order
+        {
+            CustomerName = "Aya",
+            CustomerEmail = "aya@example.com",
+            Items =
+            [
+                new OrderItem
+            {
+                ProductId = Guid.NewGuid(),
+                ProductName = "Laptop",
+                UnitPrice = 500m,
+                Quantity = 0
+            }
+            ]
+        };
+
+        // Act
+        var act = async () => await tst.CheckoutAsync(order);
+
+        // Assert
+        await act.Should().ThrowAsync<InvalidQuantityException>();
+
+        inventoryServiceMock.Verify(
+            x => x.IsAvailableAsync(
+                It.IsAny<Guid>(),
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never);
+
+        orderRepositoryMock.Verify(
+            x => x.SaveAsync(
+                It.IsAny<Order>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never);
+
+        notificationServiceMock.Verify(
+            x => x.SendOrderConfirmationAsync(
+                It.IsAny<CheckoutReceipt>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
 }
