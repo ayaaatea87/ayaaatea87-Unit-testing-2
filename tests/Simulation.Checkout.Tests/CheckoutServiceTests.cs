@@ -1,0 +1,532 @@
+﻿using System;
+using FluentAssertions;
+using Moq;
+using Simulation.Checkout.Application;
+using Simulation.Checkout.Application.Abstractions;
+using Simulation.Checkout.Domain;
+using Simulation.Checkout.Domain.Exceptions;
+using Simulation.Checkout.Tests.TestData;
+
+namespace Simulation.Checkout.Tests;
+
+public class CheckoutServiceTests
+{
+    [Fact]
+    public async Task CheckoutAsync_WhenOrderIsEmpty_ShouldThrowEmptyOrderException()
+    {
+        // Arrange
+        var orderRepositoryMock = new Mock<IOrderRepository>();
+        var inventoryServiceMock = new Mock<IInventoryService>();
+        var notificationServiceMock = new Mock<INotificationService>();
+
+        var tst = new CheckoutService(
+            orderRepositoryMock.Object,
+            inventoryServiceMock.Object,
+            notificationServiceMock.Object);
+
+        var order = new Order
+        {
+            CustomerName = "Aya",
+            CustomerEmail = "aya@example.com",
+            Items = Array.Empty<OrderItem>()
+        };
+
+        // Act
+        Func<Task> act = () => tst.CheckoutAsync(order);
+
+        // Assert
+        await act.Should().ThrowAsync<EmptyOrderException>();
+    }
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public async Task CheckoutAsync_WhenQuantityIsInvalid_ShouldThrowInvalidQuantityException(int quantity)
+    {
+        // Arrange
+        var orderRepositoryMock = new Mock<IOrderRepository>();
+        var inventoryServiceMock = new Mock<IInventoryService>();
+        var notificationServiceMock = new Mock<INotificationService>();
+
+        var tst = new CheckoutService(
+            orderRepositoryMock.Object,
+            inventoryServiceMock.Object,
+            notificationServiceMock.Object);
+
+        var productName = "Laptop";
+
+        var order = new Order
+        {
+            CustomerName = "Aya",
+            CustomerEmail = "aya@example.com",
+            Items =
+            [
+                new OrderItem
+            {
+                ProductId = Guid.NewGuid(),
+                ProductName = productName,
+                UnitPrice = 500m,
+                Quantity = quantity
+            }
+            ]
+        };
+
+        // Act
+        Func<Task> act = () => tst.CheckoutAsync(order);
+
+        // Assert
+        var exception = await act.Should()
+            .ThrowAsync<InvalidQuantityException>();
+
+        exception.Which.Message.Should().Contain(productName);
+    }
+    [Fact]
+    public async Task CheckoutAsync_WhenPriceIsNegative_ShouldThrowInvalidPriceException()
+    {
+        // Arrange
+        var orderRepositoryMock = new Mock<IOrderRepository>();
+        var inventoryServiceMock = new Mock<IInventoryService>();
+        var notificationServiceMock = new Mock<INotificationService>();
+
+        var tst = new CheckoutService(
+            orderRepositoryMock.Object,
+            inventoryServiceMock.Object,
+            notificationServiceMock.Object);
+
+        var productName = "Laptop";
+
+        var order = new Order
+        {
+            CustomerName = "Aya",
+            CustomerEmail = "aya@example.com",
+            Items =
+            [
+                new OrderItem
+            {
+                ProductId = Guid.NewGuid(),
+                ProductName = productName,
+                UnitPrice = -0.01m,
+                Quantity = 1
+            }
+            ]
+        };
+
+        // Act
+        Func<Task> act = () => tst.CheckoutAsync(order);
+
+        // Assert
+        var exception = await act.Should()
+            .ThrowAsync<InvalidPriceException>();
+
+        exception.Which.Message.Should().Contain(productName);
+    }
+    [Fact]
+    public async Task CheckoutAsync_WhenPriceIsZero_ShouldSucceed()
+    {
+        // Arrange
+        var orderRepositoryMock = new Mock<IOrderRepository>();
+        var inventoryServiceMock = new Mock<IInventoryService>();
+        var notificationServiceMock = new Mock<INotificationService>();
+
+        inventoryServiceMock
+            .Setup(x => x.IsAvailableAsync(
+                It.IsAny<Guid>(),
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+
+        var tst = new CheckoutService(
+            orderRepositoryMock.Object,
+            inventoryServiceMock.Object,
+            notificationServiceMock.Object);
+
+        var order = new Order
+        {
+            CustomerName = "Aya",
+            CustomerEmail = "aya@example.com",
+            Items =
+            [
+                new OrderItem
+            {
+                ProductId = Guid.NewGuid(),
+                ProductName = "Free Product",
+                UnitPrice = 0m,
+                Quantity = 1
+            }
+            ]
+        };
+
+        // Act
+        var receipt = await tst.CheckoutAsync(order);
+
+        // Assert
+        receipt.Should().NotBeNull();
+        receipt.Subtotal.Should().Be(0m);
+        receipt.Discount.Should().Be(0m);
+        receipt.Total.Should().Be(0m);
+    }
+    [Theory]
+    [InlineData(999.99, 0)]
+    [InlineData(1000, 100)]
+    [InlineData(1500, 100)]
+    public async Task CheckoutAsync_WhenSubtotalChanges_ShouldApplyCorrectDiscount(
+        decimal subtotal,
+        decimal expectedDiscount)
+    {
+        // Arrange
+        var orderRepositoryMock = new Mock<IOrderRepository>();
+        var inventoryServiceMock = new Mock<IInventoryService>();
+        var notificationServiceMock = new Mock<INotificationService>();
+
+        inventoryServiceMock
+            .Setup(x => x.IsAvailableAsync(
+                It.IsAny<Guid>(),
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+
+        var tst = new CheckoutService(
+            orderRepositoryMock.Object,
+            inventoryServiceMock.Object,
+            notificationServiceMock.Object);
+
+        var order = new Order
+        {
+            CustomerName = "Aya",
+            CustomerEmail = "aya@example.com",
+            Items =
+            [
+                new OrderItem
+            {
+                ProductId = Guid.NewGuid(),
+                ProductName = "Laptop",
+                UnitPrice = subtotal,
+                Quantity = 1
+            }
+            ]
+        };
+
+        // Act
+        var receipt = await tst.CheckoutAsync(order);
+
+        // Assert
+        receipt.Subtotal.Should().Be(subtotal);
+        receipt.Discount.Should().Be(expectedDiscount);
+    }
+    [Theory]
+    [InlineData(150, 2, 400, 1, 700, 0, 700)]
+    [InlineData(500, 3, 0, 0, 1500, 100, 1400)]
+    public async Task CheckoutAsync_WhenUsingExampleOrders_ShouldCalculateCorrectReceipt(
+    decimal firstPrice,
+    int firstQuantity,
+    int secondPrice,
+    int secondQuantity,
+    int expectedSubtotal,
+    int expectedDiscount,
+    int expectedTotal)
+    {
+        // Arrange
+        var orderRepositoryMock = new Mock<IOrderRepository>();
+        var inventoryServiceMock = new Mock<IInventoryService>();
+        var notificationServiceMock = new Mock<INotificationService>();
+
+        inventoryServiceMock
+            .Setup(x => x.IsAvailableAsync(
+                It.IsAny<Guid>(),
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+
+        var tst = new CheckoutService(
+            orderRepositoryMock.Object,
+            inventoryServiceMock.Object,
+            notificationServiceMock.Object);
+
+        var items = new List<OrderItem>
+    {
+        new OrderItem
+        {
+            ProductId = Guid.NewGuid(),
+            ProductName = "Product 1",
+            UnitPrice = firstPrice,
+            Quantity = firstQuantity
+        }
+    };
+
+        if (secondPrice > 0)
+        {
+            items.Add(new OrderItem
+            {
+                ProductId = Guid.NewGuid(),
+                ProductName = "Product 2",
+                UnitPrice = secondPrice,
+                Quantity = secondQuantity
+            });
+        }
+
+        var order = new Order
+        {
+            CustomerName = "Aya",
+            CustomerEmail = "aya@example.com",
+            Items = items
+        };
+
+        // Act
+        var receipt = await tst.CheckoutAsync(order);
+
+        // Assert
+        receipt.Subtotal.Should().Be(expectedSubtotal);
+        receipt.Discount.Should().Be(expectedDiscount);
+        receipt.Total.Should().Be(expectedTotal);
+    }
+// Task_2 : verfiy
+    [Fact]
+    public async Task CheckoutAsync_WhenOrderIsValid_ShouldSaveOrderAndSendConfirmationOnce()
+    {
+        // Create mock dependencies
+        // Arrange
+        var orderRepositoryMock = new Mock<IOrderRepository>();
+        var inventoryServiceMock = new Mock<IInventoryService>();
+        var notificationServiceMock = new Mock<INotificationService>();
+
+        // Handle mock behavior when called IsAvailableAsync return true instead of throw InsufficientInventoryException
+        inventoryServiceMock
+            .Setup(x => x.IsAvailableAsync(
+                It.IsAny<Guid>(),
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+
+        orderRepositoryMock
+            .Setup(x => x.SaveAsync(
+                It.IsAny<Order>(),
+                It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+
+        notificationServiceMock
+            .Setup(x => x.SendOrderConfirmationAsync(
+                It.IsAny<CheckoutReceipt>(),
+                It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+
+        var tst = new CheckoutService(
+            orderRepositoryMock.Object,
+            inventoryServiceMock.Object,
+            notificationServiceMock.Object);
+
+        var order = new Order
+        {
+            CustomerName = "Aya",
+            CustomerEmail = "aya@example.com",
+            Items =
+            [
+                new OrderItem
+            {
+                ProductId = Guid.NewGuid(),
+                ProductName = "Laptop",
+                UnitPrice = 500m,
+                Quantity = 2
+            }
+            ]
+        };
+
+        // Act
+        await tst.CheckoutAsync(order);
+
+        // // Assert - Verify the expected behavior
+        orderRepositoryMock.Verify(
+            x => x.SaveAsync(order, It.IsAny<CancellationToken>()),
+            Times.Once);
+
+        notificationServiceMock.Verify(
+            x => x.SendOrderConfirmationAsync(
+                It.IsAny<CheckoutReceipt>(),
+                It.IsAny<CancellationToken>()),
+            //  ensure that method called one time
+            Times.Once);
+    }
+    [Fact]
+    public async Task CheckoutAsync_WhenItemIsOutOfStock_ShouldThrowExceptionAndSkipSavingAndNotification()
+    {
+        // Arrange
+        var orderRepositoryMock = new Mock<IOrderRepository>();
+        var inventoryServiceMock = new Mock<IInventoryService>();
+        var notificationServiceMock = new Mock<INotificationService>();
+
+        inventoryServiceMock
+            .Setup(x => x.IsAvailableAsync(
+                It.IsAny<Guid>(),
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()))
+            // reurn false => throw InsufficientInventoryException
+            .ReturnsAsync(false);
+
+        var tst = new CheckoutService(
+            orderRepositoryMock.Object,
+            inventoryServiceMock.Object,
+            notificationServiceMock.Object);
+
+        var order = new Order
+        {
+            CustomerName = "Aya",
+            CustomerEmail = "aya@example.com",
+            Items =
+            [
+                new OrderItem
+            {
+                ProductId = Guid.NewGuid(),
+                ProductName = "Laptop",
+                UnitPrice = 500m,
+                Quantity = 2
+            }
+            ]
+        };
+
+        // Act
+        var act = async () => await tst.CheckoutAsync(order);
+
+        // Assert
+        await act.Should().ThrowAsync<InsufficientInventoryException>();
+
+        orderRepositoryMock.Verify(
+            x => x.SaveAsync(
+                It.IsAny<Order>(),
+                It.IsAny<CancellationToken>()),
+            // ensure that save order failure
+            Times.Never);
+
+        notificationServiceMock.Verify(
+            x => x.SendOrderConfirmationAsync(
+                It.IsAny<CheckoutReceipt>(),
+                It.IsAny<CancellationToken>()),
+            // ensure that send confirmation failure
+            Times.Never);
+    }
+    [Fact]
+    public async Task CheckoutAsync_WhenValidationFails_ShouldSkipInventorySavingAndNotification()
+    {
+        // Arrange
+        var orderRepositoryMock = new Mock<IOrderRepository>();
+        var inventoryServiceMock = new Mock<IInventoryService>();
+        var notificationServiceMock = new Mock<INotificationService>();
+
+        var tst = new CheckoutService(
+            orderRepositoryMock.Object,
+            inventoryServiceMock.Object,
+            notificationServiceMock.Object);
+
+        var order = new Order
+        {
+            CustomerName = "Aya",
+            CustomerEmail = "aya@example.com",
+            Items =
+            [
+                new OrderItem
+            {
+                ProductId = Guid.NewGuid(),
+                ProductName = "Laptop",
+                UnitPrice = 500m,
+                Quantity = 0
+            }
+            ]
+        };
+
+        // Act
+        var act = async () => await tst.CheckoutAsync(order);
+
+        // Assert
+        await act.Should().ThrowAsync<InvalidQuantityException>();
+
+        inventoryServiceMock.Verify(
+            x => x.IsAvailableAsync(
+                It.IsAny<Guid>(),
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never);
+
+        orderRepositoryMock.Verify(
+            x => x.SaveAsync(
+                It.IsAny<Order>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never);
+
+        notificationServiceMock.Verify(
+            x => x.SendOrderConfirmationAsync(
+                It.IsAny<CheckoutReceipt>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+    // Task-3 :
+
+    [Fact]
+    public async Task CheckoutAsync_WhenUsingAutoFixtureOrder_ShouldSucceed()
+    {
+        // Arrange
+        var orderRepositoryMock = new Mock<IOrderRepository>();
+        var inventoryServiceMock = new Mock<IInventoryService>();
+        var notificationServiceMock = new Mock<INotificationService>();
+
+        inventoryServiceMock
+            // handle mock behavior without throwing exception
+            .Setup(x => x.IsAvailableAsync(
+                It.IsAny<Guid>(),
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+
+        var order = OrderTestData.CreateValidOrder(
+            "Test Customer",
+            "test@example.com");
+
+        var tst = new CheckoutService(
+            orderRepositoryMock.Object,
+            inventoryServiceMock.Object,
+            notificationServiceMock.Object);
+
+        // Act
+        var receipt = await tst.CheckoutAsync(order);
+
+        // Assert
+        receipt.Should().NotBeNull();
+        receipt.Items.Should().NotBeEmpty();
+
+        receipt.Items.Should().OnlyContain(
+            x => x.Quantity > 0 && x.UnitPrice >= 0);
+    }
+    // Bogus
+
+    [Fact]
+    public async Task CheckoutAsync_WhenUsingBogusCustomer_ShouldPreserveCustomerDataInReceipt()
+    {
+        // Arrange
+        var orderRepositoryMock = new Mock<IOrderRepository>();
+        var inventoryServiceMock = new Mock<IInventoryService>();
+        var notificationServiceMock = new Mock<INotificationService>();
+
+        inventoryServiceMock
+            .Setup(x => x.IsAvailableAsync(
+                It.IsAny<Guid>(),
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+
+        var customer = CustomerTestData.Create();
+
+        var order = OrderTestData.CreateValidOrder(
+            customer.Name,
+            customer.Email);
+
+        var tst = new CheckoutService(
+            orderRepositoryMock.Object,
+            inventoryServiceMock.Object,
+            notificationServiceMock.Object);
+
+        // Act
+        var receipt = await tst.CheckoutAsync(order);
+
+        // Assert
+        receipt.CustomerName.Should().Be(customer.Name);
+        receipt.CustomerEmail.Should().Be(customer.Email);
+    }
+
+
+}
